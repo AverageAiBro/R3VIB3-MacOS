@@ -37,7 +37,7 @@ Window screenshots now use asynchronous ScreenCaptureKit because the old capture
 
 ## Mini setup and evidence
 
-The Mini is Apple Silicon, running macOS 27.0.1. It had about 74 GiB available before setup. Its initial Command Line Tools (Swift 6.3.3, SDK 26.5) compiled the app but could not run XCTest (`no such module XCTest`). Xcode 27.0 (27A266a) was copied from the existing Apple-signed MacBook installation, passed strict deep signature verification on the Mini, and was installed at `/Applications/Xcode.app`. `xcode-select` now points to `/Applications/Xcode.app/Contents/Developer`. Its minimum macOS version is 26.6, satisfied by the Mini. First-launch setup is blocked by the unaccepted Xcode and Apple SDK license; `sudo -n xcodebuild -runFirstLaunch` returned exit 77. Approval to accept the license has been requested. Full XCTest verification on the Mini remains pending; do not describe the development environment as ready yet.
+The Mini is Apple Silicon, running macOS 27.0.1. It had about 74 GiB available before setup. Its initial Command Line Tools (Swift 6.3.3, SDK 26.5) compiled the app but could not run XCTest (`no such module XCTest`). Xcode 27.0 (27A266a) was copied from the existing Apple-signed MacBook installation, passed strict deep signature verification on the Mini, and was installed at `/Applications/Xcode.app`. `xcode-select` now points to `/Applications/Xcode.app/Contents/Developer`. Its minimum macOS version is 26.6, satisfied by the Mini. The standard license and first-launch setup are complete; `xcodebuild -checkFirstLaunchStatus` passes. Reno also explicitly confirmed license acceptance. The active toolchain is Apple Swift 6.4 with macOS SDK 27.0. All 17 tests pass on the Mini, `scripts/verify.sh` passes, and the Xcode Debug project build succeeds. About 63 GiB remains available after setup and builds.
 
 The Mini independently passed `scripts/verify.sh`, an arm64 Debug package build, and strict deep codesign verification using its original Command Line Tools before selecting Xcode. Selected MacBook test/build logs and the settings screenshot were also copied to `build/migration-r3v-13/macbook-evidence/`.
 
@@ -55,7 +55,7 @@ The Mini's packaged Whisper CLI successfully transcribed whisper.cpp's public JF
 
 Preview bundle ID: `com.averageaibro.r3vib3.preview`. Preview location: `R3VIB3.app` in the task worktree. Preserve the preview identity during testing so permissions do not accidentally target another build.
 
-After reviewing/accepting the Apple license, complete setup and check it with `sudo xcodebuild -runFirstLaunch` and `xcodebuild -checkFirstLaunchStatus`. Then run the full test suite.
+Full-toolchain verification logs: `xcode-tests.log`, `xcode-verify.log`, and `xcode-build.log` in `build/migration-r3v-13/`. First-launch and the full test suite are already complete.
 
 Typical commands:
 
@@ -86,4 +86,18 @@ The proposed implementation seam is a configured, authenticated remote transcrip
 
 The existing conversation is `01a12748-fb92-7f91-a00d-7041dd6398c3` (Unarchive r3vibe GitHub repo). It started as a projectless chat; direct remote handoff originally failed for that reason, independently of GitHub publication.
 
-Using Codex's supported UI, the local task worktree was registered as a Git project and the conversation was attached to it. A matching remote project **R3VIB3 - Mini** was created at `/Users/r3no/Dev/R3VIB3-MacOS` on **Renos-Mac-mini.local**. The actual conversation has not yet moved as of this document's preparation. Once verification is complete, initiate the existing-chat handoff from another authorized chat or supported UI. The handoff tool cannot move its own calling chat. This document preserves the substantive context independently of that transfer.
+Using Codex's supported UI, the local task worktree was registered as a Git project and the conversation was attached to it. A matching remote project **R3VIB3 - Mini** was created at `/Users/r3no/Dev/R3VIB3-MacOS` on **Renos-Mac-mini.local**. The actual conversation has not yet moved as of this document's preparation. The environment is verified and ready. Initiate the existing-chat handoff from another authorized chat or supported UI. The handoff tool cannot move its own calling chat. This document preserves the substantive context independently of that transfer.
+
+
+## Requested skills and model choice
+
+Reno requested **GPT-6.1 Sol with high reasoning** for this development/setup conversation. Preserve that choice during handoff; do not change unrelated chats.
+
+Reno also requested the Apple development skills supplied in DreamEater. Installed through Codex's skill-installer helper into `/Users/r3no/.codex/skills`, which previously contained only system skills:
+
+- Swift Concurrency: `AvdLee/Swift-Concurrency-Agent-Skill` at `d5770817d2622e1585b1f7eaebc791a9cb0959c8`.
+- Six Xcode build optimization skills: `AvdLee/Xcode-Build-Optimization-Agent-Skill` at `6bd7b596cd688b1127ded00e812b1b6937ec35d6`.
+- SwiftUI Pro: `twostraws/swiftui-agent-skill` at `f9800713b24580bc444931949aad4519128605e8`. The upstream directory includes its nested Claude plugin copy.
+- Twenty-five ASC skills: `rorkai/app-store-connect-cli-skills` at `9c7e769f09a18237c9bd9c70f70aef65f0cd0391`, linked by the official `rorkai/App-Store-Connect-CLI` README.
+
+Total: **33 skill directories**. Homebrew's official `asc` formula installed CLI **5.10.0** at `/opt/homebrew/bin/asc`. No Apple account credentials, signing material, billing changes, releases or distribution operations were configured. Workflow-specific optional tools remain task-dependent. Skills are available on the next Mini Codex turn. Tracking: [R3V-15](https://linear.app/mstr-apps/issue/R3V-15).
