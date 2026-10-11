@@ -7,7 +7,7 @@ cd "$ROOT"
 
 APP_NAME=${APP_NAME:-R3VIB3}
 BUNDLE_ID=${BUNDLE_ID:-com.localtranscribepaste.app}
-MACOS_MIN_VERSION=${MACOS_MIN_VERSION:-12.0}
+MACOS_MIN_VERSION=${MACOS_MIN_VERSION:-26.0}
 MENU_BAR_APP=${MENU_BAR_APP:-1}
 SIGNING_MODE=${SIGNING_MODE:-}
 APP_IDENTITY=${APP_IDENTITY:-}
@@ -27,8 +27,12 @@ if [[ ${#ARCH_LIST[@]} -eq 0 ]]; then
   ARCH_LIST=("$HOST_ARCH")
 fi
 
+BUILD_DIRS=()
 for ARCH in "${ARCH_LIST[@]}"; do
-  swift build -c "$CONF" --arch "$ARCH"
+  # SwiftPM's product layout varies by build system. Isolate architectures and ask for the path.
+  SCRATCH_PATH="$ROOT/.build/package-$ARCH"
+  swift build -c "$CONF" --arch "$ARCH" --scratch-path "$SCRATCH_PATH"
+  BUILD_DIRS+=("$(swift build -c "$CONF" --arch "$ARCH" --scratch-path "$SCRATCH_PATH" --show-bin-path)")
 done
 
 APP="$ROOT/${APP_NAME}.app"
@@ -76,10 +80,15 @@ PLIST
 build_product_path() {
   local name="$1"
   local arch="$2"
-  case "$arch" in
-    arm64|x86_64) echo ".build/${arch}-apple-macosx/$CONF/$name" ;;
-    *) echo ".build/$CONF/$name" ;;
-  esac
+  local index
+  for index in "${!ARCH_LIST[@]}"; do
+    if [[ "${ARCH_LIST[$index]}" == "$arch" ]]; then
+      echo "${BUILD_DIRS[$index]}/$name"
+      return
+    fi
+  done
+  echo "ERROR: No build directory for $arch" >&2
+  return 1
 }
 
 verify_binary_arches() {
@@ -147,7 +156,7 @@ if [[ ${#SWIFTPM_BUNDLES[@]} -gt 0 ]]; then
 fi
 
 # Embed frameworks if any exist in the build folder.
-FRAMEWORK_DIRS=(".build/$CONF" ".build/${ARCH_LIST[0]}-apple-macosx/$CONF")
+FRAMEWORK_DIRS=("${BUILD_DIRS[@]}")
 for dir in "${FRAMEWORK_DIRS[@]}"; do
   if compgen -G "${dir}/*.framework" >/dev/null; then
     cp -R "${dir}/"*.framework "$APP/Contents/Frameworks/"

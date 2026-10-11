@@ -3,10 +3,12 @@ import SwiftUI
 enum IndicatorMode {
     case recording
     case pasteReady
+    case transcribing
 }
 
 struct RecordingIndicatorView: View {
     let mode: IndicatorMode
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var text: String {
         switch mode {
@@ -14,6 +16,8 @@ struct RecordingIndicatorView: View {
             return "Recording"
         case .pasteReady:
             return "Paste ready"
+        case .transcribing:
+            return "Transcribing"
         }
     }
 
@@ -23,6 +27,8 @@ struct RecordingIndicatorView: View {
             return .red
         case .pasteReady:
             return .green
+        case .transcribing:
+            return .accentColor
         }
     }
 
@@ -34,16 +40,21 @@ struct RecordingIndicatorView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.black.opacity(0.78))
-        )
+        .glassEffect(R3VTheme.glass, in: Capsule())
+        .padding(4)
+        .r3vTheme()
     }
 
     @ViewBuilder
     private var indicator: some View {
         if mode == .recording {
-            WaveformBars(color: color)
+            if reduceMotion {
+                Image(systemName: "mic.fill").foregroundColor(color)
+            } else {
+                WaveformBars(color: color)
+            }
+        } else if mode == .transcribing {
+            ProgressView().controlSize(.small)
         } else {
             Circle()
                 .fill(color)
@@ -56,7 +67,7 @@ private struct WaveformBars: View {
     let color: Color
 
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 3) {
                 ForEach(0..<5, id: \.self) { index in

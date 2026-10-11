@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "R3VIB3",
     platforms: [
-        .macOS(.v12),
+        .macOS(.v26),
     ],
     targets: [
         .executableTarget(
@@ -16,6 +16,8 @@ let package = Package(
             ],
             resources: [
                 .process("Resources"),
-            ])
-    ]
+            ]),
+        .testTarget(name: "R3VIB3Tests", dependencies: ["R3VIB3"], path: "Tests")
+    ],
+    swiftLanguageModes: [.v5]
 )

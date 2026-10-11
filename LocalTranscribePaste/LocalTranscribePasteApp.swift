@@ -1,12 +1,14 @@
-import SwiftUI
+import AppKit
 
 @main
-struct LocalTranscribePasteApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
+enum LocalTranscribePasteApp {
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        application.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) {
+            application.run()
         }
     }
 }

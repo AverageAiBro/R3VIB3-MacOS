@@ -7,7 +7,6 @@ struct PermissionsView: View {
     @State private var micAuthorized: Bool
     @State private var accessibilityAuthorized: Bool
     @State private var screenRecordingAuthorized: Bool
-    @State private var micStatus: MicrophoneAuthorizationStatus
 
     init(
         permissions: PermissionsManaging,
@@ -20,114 +19,83 @@ struct PermissionsView: View {
         _micAuthorized = State(initialValue: permissions.isMicrophoneAuthorized)
         _accessibilityAuthorized = State(initialValue: permissions.isAccessibilityAuthorized)
         _screenRecordingAuthorized = State(initialValue: permissions.isScreenRecordingAuthorized)
-        _micStatus = State(initialValue: permissions.microphoneStatus)
     }
 
     var body: some View {
-        Group {
-            if #available(macOS 13.0, *) {
-                Form {
-                    formBody
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Ready when you are").font(.title2.weight(.semibold))
+                    Text("Enable access for the features you want to use.")
+                        .foregroundColor(.secondary)
                 }
-                .formStyle(.grouped)
-            } else {
-                Form {
-                    formBody
-                }
-            }
-        }
-        .frame(minWidth: 520, minHeight: 420)
-        .onAppear { refresh() }
-    }
-
-    @ViewBuilder
-    private var formBody: some View {
-        statusSection
-        actionsSection
-        helpSection
-    }
-
-    private var statusSection: some View {
-        Section("Permissions status") {
-            statusRow(title: "Microphone", isAuthorized: micAuthorized)
-            statusRow(title: "Accessibility", isAuthorized: accessibilityAuthorized)
-            statusRow(title: "Screen Recording", isAuthorized: screenRecordingAuthorized)
-        }
-    }
-
-    private var actionsSection: some View {
-        Section("Actions") {
-            Button("Request Microphone Permission") {
-                permissions.requestMicrophoneAccess { granted in
-                    refresh()
-                    if !granted {
-                        permissions.openMicrophoneSettings()
+                permissionRow("Microphone", detail: "Record your voice for local transcription.", symbol: "mic",
+                              authorized: micAuthorized) {
+                    permissions.requestMicrophoneAccess { granted in
+                        refresh()
+                        if !granted { permissions.openMicrophoneSettings() }
                     }
                 }
-            }
-            Button("Request Accessibility Permission") {
-                permissions.requestAccessibilityAccess()
-                refresh()
-            }
-            Button("Request Screen Recording Permission") {
-                permissions.requestScreenRecordingAccess()
-                refresh()
-                if !permissions.isScreenRecordingAuthorized {
-                    permissions.openScreenRecordingSettings()
+                permissionRow("Accessibility", detail: "Use global shortcuts and paste into other apps.", symbol: "keyboard",
+                              authorized: accessibilityAuthorized) {
+                    permissions.requestAccessibilityAccess()
+                    refresh()
+                }
+                permissionRow("Screen Recording", detail: "Capture a window. Optional for dictation.", symbol: "rectangle.dashed",
+                              authorized: screenRecordingAuthorized) {
+                    permissions.requestScreenRecordingAccess()
+                    refresh()
+                    if !permissions.isScreenRecordingAuthorized { permissions.openScreenRecordingSettings() }
+                }
+                HStack {
+                    Text("Status updates when you return to R3VIB3.")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Refresh", action: refresh)
+                }
+                DisclosureGroup("Troubleshooting") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Manage access in System Settings → Privacy & Security. Restart R3VIB3 if macOS asks you to.")
+                        if let id = bundle.bundleIdentifier { Text("Bundle: \(id)") }
+                        Text(bundle.bundlePath).textSelection(.enabled)
+                    }
+                    .font(.caption).foregroundColor(.secondary)
+                    .padding(.top, 8)
                 }
             }
-            Button("Refresh Status") {
-                refresh()
-            }
+            .padding(24)
         }
+        .frame(minWidth: 560, minHeight: 510)
+        .r3vTheme(window: true)
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
     }
 
-    private var helpSection: some View {
-        Section("How to enable") {
-            Text("System Settings > Privacy & Security > Microphone")
-            Text("System Settings > Privacy & Security > Accessibility")
-            Text("System Settings > Privacy & Security > Screen Recording")
-            Text("If R3VIB3 is missing or stuck, remove it and re-add in Accessibility.")
-            Text("Enable R3VIB3, then restart the app if needed.")
-            if let bundleID = bundle.bundleIdentifier {
-                Text("Bundle ID: \(bundleID)")
+    private func permissionRow(_ title: String, detail: String, symbol: String,
+                               authorized: Bool, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol).font(.title3).foregroundColor(.accentColor).frame(width: 26)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.headline)
+                Text(detail).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text("App path: \(bundle.bundlePath)")
+            Spacer(minLength: 10)
+            if authorized {
+                Label("Enabled", systemImage: "checkmark.circle.fill")
+                    .font(.callout).foregroundColor(.green)
+            } else {
+                Button("Enable…", action: action).accessibilityLabel("Enable \(title)")
+            }
         }
-        .font(.caption)
+        .padding(16)
+        .background(R3VTheme.canvas, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.08), lineWidth: 1))
     }
 
     private func refresh() {
         micAuthorized = permissions.isMicrophoneAuthorized
         accessibilityAuthorized = permissions.isAccessibilityAuthorized
         screenRecordingAuthorized = permissions.isScreenRecordingAuthorized
-        micStatus = permissions.microphoneStatus
-        permissions.logCurrentStatus()
-        if accessibilityAuthorized {
-            holdHotkeyManager.restartIfNeeded()
-        }
-    }
-
-    @ViewBuilder
-    private func statusRow(title: String, isAuthorized: Bool) -> some View {
-        labeledRow(title) {
-            Text(isAuthorized ? "Authorized" : "Not authorized")
-                .foregroundColor(isAuthorized ? .green : .red)
-        }
-    }
-
-    @ViewBuilder
-    private func labeledRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        if #available(macOS 13.0, *) {
-            LabeledContent(title) {
-                content()
-            }
-        } else {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .frame(width: 160, alignment: .leading)
-                content()
-            }
-        }
+        if accessibilityAuthorized { holdHotkeyManager.restartIfNeeded() }
     }
 }

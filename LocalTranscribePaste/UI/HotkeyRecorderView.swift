@@ -34,11 +34,18 @@ struct HotkeyRecorderView: View {
     var body: some View {
         HStack {
             Text(hotkey.displayString())
-                .frame(minWidth: 140, alignment: .leading)
+                .font(.system(.body, design: .monospaced))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
+                .frame(minWidth: 125, alignment: .trailing)
             Button(recordButtonTitle) {
                 toggleRecording()
             }
         }
+        .onDisappear { stopRecording() }
     }
 
     private func toggleRecording() {
@@ -68,6 +75,10 @@ struct HotkeyRecorderView: View {
             return event
         }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == UInt16(kVK_Escape) {
+                stopRecording()
+                return nil
+            }
             sawKeyDown = true
             cancelFnOnlyCommit()
             let base = event.modifierFlags.intersection([.control, .option, .shift, .command])

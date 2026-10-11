@@ -56,6 +56,7 @@ struct SystemPasteboard: PasteboardWriting {
 protocol KeyboardEventSending {
     func sendPaste(modifier: CGEventFlags)
     func sendKey(code: CGKeyCode, shift: Bool)
+    func sendUnicodeText(_ text: String)
 }
 
 struct SystemKeyboardEventSender: KeyboardEventSending {
@@ -70,12 +71,28 @@ struct SystemKeyboardEventSender: KeyboardEventSending {
         keyUp?.post(tap: .cghidEventTap)
     }
 
+    func sendUnicodeText(_ text: String) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let units = Array(text.utf16)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        units.withUnsafeBufferPointer { buffer in
+            guard let address = buffer.baseAddress else { return }
+            down?.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: address)
+            up?.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: address)
+        }
+        down?.flags = []
+        up?.flags = []
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
     func sendKey(code: CGKeyCode, shift: Bool) {
         let source = CGEventSource(stateID: .combinedSessionState)
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
-        if shift { keyDown?.flags = .maskShift }
+        keyDown?.flags = shift ? .maskShift : []
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
-        if shift { keyUp?.flags = .maskShift }
+        keyUp?.flags = shift ? .maskShift : []
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
     }

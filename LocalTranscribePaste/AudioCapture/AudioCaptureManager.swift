@@ -32,6 +32,13 @@ final class AudioCaptureManager {
         let tempURL = fileSystem.temporaryDirectory
             .appendingPathComponent("ltp_recording_\(uuidProvider.makeUUID().uuidString).caf")
         recordingURL = tempURL
+        defer {
+            if !isRecording {
+                recorder = nil
+                recordingURL = nil
+                try? fileSystem.removeItem(at: tempURL)
+            }
+        }
 
         do {
             try startRecorder(at: tempURL, sampleRate: 44100)

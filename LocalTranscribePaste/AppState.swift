@@ -19,6 +19,8 @@ final class AppState: ObservableObject {
     let settings: SettingsStore
     let permissions: PermissionsManaging
 
+    private let fileSystem: FileSystem
+    private var ownedRecordings: Set<URL> = []
     private let audioCapture: AudioCapturing
     private let transcriptionManager: TranscriptionManaging
     private let pasteManager: PasteManaging
@@ -26,6 +28,7 @@ final class AppState: ObservableObject {
     private let screenshotSessionID: String
     private let windowPickerFactory: () -> WindowPickerController
     private var activeWindowPicker: WindowPickerController?
+    private var isCapturingScreenshot = false
     private var hotkeyManager: HotkeyManaging
     private var holdHotkeyManager: HoldHotkeyManaging
     private let statusBarControllerFactory: (AppState) -> StatusBarControlling
@@ -50,8 +53,10 @@ final class AppState: ObservableObject {
         holdHotkeyManager: HoldHotkeyManaging = HoldHotkeyManager.shared,
         statusBarControllerFactory: @escaping (AppState) -> StatusBarControlling = { StatusBarController(appState: $0) },
         mainThread: MainThreadRunning = MainThreadRunner(),
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        fileSystem: FileSystem = SystemFileSystem()
     ) {
+        self.fileSystem = fileSystem
         self.settings = settings
         self.audioCapture = audioCapture
         self.transcriptionManager = transcriptionManager
@@ -75,7 +80,6 @@ final class AppState: ObservableObject {
         _ = statusBarController
         permissions.logCurrentStatus()
         if !permissions.isAccessibilityAuthorized {
-            permissions.resetAccessibilityPermissionIfNeeded()
             statusBarController.showMessage("Accessibility permission required. Open Permissions checklist from the menu bar to enable.")
         }
         accessibilityObserver = notificationCenter.addObserver(
@@ -143,23 +147,24 @@ final class AppState: ObservableObject {
     }
 
     private func observeSettings() {
-        settings.$toggleHotkey.sink { hotkey in
-            self.holdHotkeyManager.updateToggleHotkey(hotkey)
-            self.updateCarbonHotkeys()
+        // @Published emits before SettingsStore is updated. Register the emitted value.
+        settings.$toggleHotkey.removeDuplicates().dropFirst().sink { [weak self] hotkey in
+            self?.holdHotkeyManager.updateToggleHotkey(hotkey)
+            self?.updateCarbonHotkeys(toggle: hotkey)
         }.store(in: &cancellables)
 
-        settings.$pasteHotkey.sink { hotkey in
-            self.holdHotkeyManager.updatePasteHotkey(hotkey)
-            self.updateCarbonHotkeys()
+        settings.$pasteHotkey.removeDuplicates().dropFirst().sink { [weak self] hotkey in
+            self?.holdHotkeyManager.updatePasteHotkey(hotkey)
+            self?.updateCarbonHotkeys(paste: hotkey)
         }.store(in: &cancellables)
 
-        settings.$holdHotkey.sink { hotkey in
-            self.holdHotkeyManager.updateHoldHotkey(hotkey)
+        settings.$holdHotkey.removeDuplicates().dropFirst().sink { [weak self] hotkey in
+            self?.holdHotkeyManager.updateHoldHotkey(hotkey)
         }.store(in: &cancellables)
 
-        settings.$screenshotHotkey.sink { hotkey in
-            self.holdHotkeyManager.updateScreenshotHotkey(hotkey)
-            self.updateCarbonHotkeys()
+        settings.$screenshotHotkey.removeDuplicates().dropFirst().sink { [weak self] hotkey in
+            self?.holdHotkeyManager.updateScreenshotHotkey(hotkey)
+            self?.updateCarbonHotkeys(screenshot: hotkey)
         }.store(in: &cancellables)
     }
 
@@ -172,16 +177,21 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func updateCarbonHotkeys() {
-        let toggle = settings.toggleHotkey.requiresEventTap ? nil : settings.toggleHotkey
-        let paste = settings.pasteHotkey.requiresEventTap ? nil : settings.pasteHotkey
-        let screenshot = settings.screenshotHotkey.requiresEventTap ? nil : settings.screenshotHotkey
-        hotkeyManager.registerHotkeys(toggle: toggle, paste: paste, screenshot: screenshot)
+    private func updateCarbonHotkeys(toggle: Hotkey? = nil, paste: Hotkey? = nil, screenshot: Hotkey? = nil) {
+        let toggle = toggle ?? settings.toggleHotkey
+        let paste = paste ?? settings.pasteHotkey
+        let screenshot = screenshot ?? settings.screenshotHotkey
+        hotkeyManager.registerHotkeys(
+            toggle: toggle.requiresEventTap ? nil : toggle,
+            paste: paste.requiresEventTap ? nil : paste,
+            screenshot: screenshot.requiresEventTap ? nil : screenshot
+        )
     }
 
     func toggleDictation() {
         mainThread.run { [weak self] in
             guard let self = self else { return }
+            guard !self.isTranscribing else { return }
             if self.isRecording {
                 self.stopRecordingAndTranscribe()
             } else {
@@ -212,6 +222,7 @@ final class AppState: ObservableObject {
             } catch {
                 Log.audio.error("Failed to start recording: \(error.localizedDescription)")
                 self.statusBarController.showMessage("Failed to start recording")
+                self.activeRecordingMode = .none
             }
         }
     }
@@ -221,6 +232,8 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             do {
                 let audioURL = try self.audioCapture.stopRecording()
+                self.ownedRecordings.insert(audioURL)
+                self.activeRecordingMode = .none
                 self.isRecording = false
                 self.statusBarController.updateRecordingIndicator(isRecording: false)
                 Log.audio.info("Recording stopped")
@@ -238,7 +251,7 @@ final class AppState: ObservableObject {
     private func startHoldRecording() {
         mainThread.run { [weak self] in
             guard let self = self else { return }
-            guard !self.isRecording else { return }
+            guard !self.isRecording, !self.isTranscribing else { return }
             guard self.permissions.isMicrophoneAuthorized else {
                 self.statusBarController.showPermissions()
                 return
@@ -272,6 +285,7 @@ final class AppState: ObservableObject {
     }
 
     func transcribe(audioURL: URL) {
+        guard !isTranscribing, !isRecording else { return }
         guard permissions.isMicrophoneAuthorized else {
             statusBarController.showPermissions()
             return
@@ -279,6 +293,9 @@ final class AppState: ObservableObject {
         isPasteReady = false
         statusBarController.clearPasteReadyIndicator()
         isTranscribing = true
+        if let previous = lastAudioFileURL, previous != audioURL {
+            removeOwnedRecording(previous)
+        }
         lastAudioFileURL = audioURL
         Log.transcription.info("Transcription started")
         transcriptionManager.transcribe(audioURL: audioURL, modelPath: settings.modelPath) { [weak self] result in
@@ -331,6 +348,7 @@ final class AppState: ObservableObject {
     }
 
     func captureWindowScreenshot() {
+        guard activeWindowPicker == nil, !isCapturingScreenshot else { return }
         if !permissions.isScreenRecordingAuthorized {
             statusBarController.showMessage("Enable Screen Recording to capture windows.")
             permissions.requestScreenRecordingAccess()
@@ -343,11 +361,15 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             self.activeWindowPicker = nil
             guard let selection else { return }
-            if let _ = self.screenshotStore.capture(windowID: selection.windowID, screenFrameOverride: selection.screenFrame) {
-                self.screenshots = self.loadSessionScreenshots()
-                self.statusBarController.showScreenshotClipboard()
-            } else {
-                self.statusBarController.showMessage("Unable to capture window")
+            self.isCapturingScreenshot = true
+            Task { @MainActor in
+                defer { self.isCapturingScreenshot = false }
+                if await self.screenshotStore.capture(windowID: selection.windowID, screenFrameOverride: selection.screenFrame) != nil {
+                    self.screenshots = self.loadSessionScreenshots()
+                    self.statusBarController.showScreenshotClipboard()
+                } else {
+                    self.statusBarController.showMessage("Unable to capture window. Check Screen Recording access and choose the window again.")
+                }
             }
         }
     }
@@ -370,10 +392,32 @@ final class AppState: ObservableObject {
     }
 
     func clearTranscript() {
+        guard !isTranscribing, !isRecording else { return }
+        if let audioURL = lastAudioFileURL { removeOwnedRecording(audioURL) }
         lastTranscript = ""
         lastAudioFileURL = nil
         isPasteReady = false
         statusBarController.clearPasteReadyIndicator()
+    }
+
+    func shutdown() {
+        if isRecording, let url = try? audioCapture.stopRecording() { ownedRecordings.insert(url) }
+        for url in ownedRecordings { removeOwnedRecording(url) }
+    }
+
+    private func removeOwnedRecording(_ url: URL) {
+        guard ownedRecordings.contains(url) else { return }
+        do {
+            try fileSystem.removeItem(at: url)
+            ownedRecordings.remove(url)
+        } catch {
+            Log.audio.error("Unable to remove temporary recording: \(error.localizedDescription)")
+        }
+    }
+
+    deinit {
+        if let accessibilityObserver { notificationCenter.removeObserver(accessibilityObserver) }
+        for url in ownedRecordings { try? fileSystem.removeItem(at: url) }
     }
 
     private func describeTranscriptionError(_ error: Error) -> String {

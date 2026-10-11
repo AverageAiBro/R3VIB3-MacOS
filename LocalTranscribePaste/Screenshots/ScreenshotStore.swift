@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import ImageIO
 import UniformTypeIdentifiers
+import ScreenCaptureKit
 
 struct ScreenshotItem: Identifiable, Hashable {
     let id: UUID
@@ -21,7 +22,7 @@ struct ScreenshotItem: Identifiable, Hashable {
 
 protocol ScreenshotStoring {
     func load() -> [ScreenshotItem]
-    func capture(windowID: CGWindowID, screenFrameOverride: CGRect?) -> ScreenshotItem?
+    @MainActor func capture(windowID: CGWindowID, screenFrameOverride: CGRect?) async -> ScreenshotItem?
     func delete(_ item: ScreenshotItem)
     func pruneIfNeeded(keepLast: Int)
 }
@@ -32,19 +33,22 @@ final class ScreenshotStore: ScreenshotStoring {
     private let processRunner: ProcessRunning
     private let maxItems: Int
     private let sessionID: String?
+    private let imageCapture: (CGWindowID) async throws -> CGImage
 
     init(
         fileSystem: FileSystem = SystemFileSystem(),
         uuidProvider: UUIDProviding = SystemUUIDProvider(),
         processRunner: ProcessRunning = SystemProcessRunner(),
         maxItems: Int = 10,
-        sessionID: String? = nil
+        sessionID: String? = nil,
+        imageCapture: @escaping (CGWindowID) async throws -> CGImage = ScreenshotStore.captureImage
     ) {
         self.fileSystem = fileSystem
         self.uuidProvider = uuidProvider
         self.processRunner = processRunner
         self.maxItems = maxItems
         self.sessionID = sessionID
+        self.imageCapture = imageCapture
     }
 
     func load() -> [ScreenshotItem] {
@@ -56,7 +60,10 @@ final class ScreenshotStore: ScreenshotStoring {
             guard url.pathExtension.lowercased() == "png" else { return nil }
             let values = try? url.resourceValues(forKeys: [.creationDateKey])
             let createdAt = values?.creationDate ?? Date.distantPast
-            let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent.components(separatedBy: "-").last ?? "") ?? UUID()
+            // UUIDs contain hyphens; the final component is only twelve characters.
+            guard let id = UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.suffix(36))) else {
+                return nil
+            }
             let metadata = readMetadataFull(for: url)
             return ScreenshotItem(
                 id: id,
@@ -69,7 +76,7 @@ final class ScreenshotStore: ScreenshotStoring {
         .sorted { $0.createdAt > $1.createdAt }
     }
 
-    func capture(windowID: CGWindowID, screenFrameOverride: CGRect?) -> ScreenshotItem? {
+    @MainActor func capture(windowID: CGWindowID, screenFrameOverride: CGRect?) async -> ScreenshotItem? {
         guard windowID != 0 else { return nil }
         let id = uuidProvider.makeUUID()
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
@@ -78,28 +85,17 @@ final class ScreenshotStore: ScreenshotStoring {
         let windowBounds = windowBoundsForWindow(windowID)
         let screenFrame = screenFrameOverride ?? windowBounds.flatMap { screenFrameForWindowBounds($0) }
 
-        let imageOptions: CGWindowImageOption = [.bestResolution]
-        if let cgImage = captureImage(windowID: windowID, bounds: .null, imageOptions: imageOptions) {
-            if let windowBounds, isCompositeCapture(image: cgImage, windowBounds: windowBounds) {
-                Log.screenshots.error(
-                    "Captured image size \(cgImage.width, privacy: .public)x\(cgImage.height, privacy: .public) looks larger than window bounds \(NSStringFromRect(windowBounds), privacy: .public)"
-                )
-            } else {
-                guard writePNG(cgImage: cgImage, to: url) else { return nil }
-                writeMetadata(for: url, screenFrame: screenFrame)
-                pruneIfNeeded(keepLast: maxItems)
-                let createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
-                return ScreenshotItem(
-                    id: id,
-                    url: url,
-                    createdAt: createdAt,
-                    screenFrame: screenFrame,
-                    sessionID: sessionID
-                )
-            }
+        do {
+            let image = try await imageCapture(windowID)
+            guard !Task.isCancelled, writePNG(cgImage: image, to: url) else { return nil }
+            writeMetadata(for: url, screenFrame: screenFrame)
+            pruneIfNeeded(keepLast: maxItems)
+            let createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+            return ScreenshotItem(id: id, url: url, createdAt: createdAt, screenFrame: screenFrame, sessionID: sessionID)
+        } catch {
+            Log.screenshots.error("Window capture failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
-
-        return nil
     }
 
     func delete(_ item: ScreenshotItem) {
@@ -180,53 +176,20 @@ final class ScreenshotStore: ScreenshotStoring {
         readMetadataFull(for: screenshotURL)?.screenFrame.cgRect
     }
 
-    private func captureImage(windowID: CGWindowID, bounds: CGRect, imageOptions: CGWindowImageOption) -> CGImage? {
-        if let image = createImageFromArray(windowID: windowID, bounds: bounds, imageOptions: imageOptions) {
-            Log.screenshots.info(
-                "Captured window id \(windowID, privacy: .public) using CGWindowListCreateImageFromArray size \(image.width, privacy: .public)x\(image.height, privacy: .public)"
-            )
-            return image
+    static func captureImage(windowID: CGWindowID) async throws -> CGImage {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+            throw CocoaError(.fileNoSuchFile)
         }
-        let listOptions: CGWindowListOption = [.optionIncludingWindow]
-        if let image = CGWindowListCreateImage(bounds, listOptions, windowID, imageOptions) {
-            Log.screenshots.info(
-                "Captured window id \(windowID, privacy: .public) using CGWindowListCreateImage size \(image.width, privacy: .public)x\(image.height, privacy: .public)"
-            )
-            return image
-        }
-        return nil
-    }
-
-    private func createImageFromArray(windowID: CGWindowID, bounds: CGRect, imageOptions: CGWindowImageOption) -> CGImage? {
-        guard let windowArray = makeWindowIDArray([windowID]) else { return nil }
-        return CGImage(windowListFromArrayScreenBounds: bounds, windowArray: windowArray, imageOption: imageOptions)
-    }
-
-    private func makeWindowIDArray(_ ids: [CGWindowID]) -> CFArray? {
-        guard !ids.isEmpty else { return nil }
-        var numbers: [CFNumber] = []
-        numbers.reserveCapacity(ids.count)
-        for windowID in ids {
-            var rawValue = Int32(bitPattern: windowID)
-            guard let number = CFNumberCreate(kCFAllocatorDefault, CFNumberType.sInt32Type, &rawValue) else {
-                return nil
-            }
-            numbers.append(number)
-        }
-        return numbers as CFArray
-    }
-
-    private func isCompositeCapture(image: CGImage, windowBounds: CGRect) -> Bool {
-        guard let expectedPixelSize = expectedPixelSize(for: windowBounds) else { return false }
-        let widthRatio = CGFloat(image.width) / max(expectedPixelSize.width, 1)
-        let heightRatio = CGFloat(image.height) / max(expectedPixelSize.height, 1)
-        return widthRatio > 1.5 || heightRatio > 1.5
-    }
-
-    private func expectedPixelSize(for windowBounds: CGRect) -> CGSize? {
-        guard let screen = screenForWindowBounds(windowBounds) else { return nil }
-        let scale = screen.backingScaleFactor
-        return CGSize(width: windowBounds.width * scale, height: windowBounds.height * scale)
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = max(1, Int((filter.contentRect.width * CGFloat(filter.pointPixelScale)).rounded()))
+        config.height = max(1, Int((filter.contentRect.height * CGFloat(filter.pointPixelScale)).rounded()))
+        config.ignoreShadowsSingleWindow = true
+        config.ignoreGlobalClipSingleWindow = true
+        config.showsCursor = false
+        config.capturesAudio = false
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 
     private func screenFrameForWindowBounds(_ windowBounds: CGRect) -> CGRect? {

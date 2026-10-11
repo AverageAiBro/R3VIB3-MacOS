@@ -7,12 +7,13 @@ final class RecordingIndicatorWindowController: NSWindowController {
 
     init() {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 160, height: 36),
+            contentRect: NSRect(x: 0, y: 0, width: 160, height: 44),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
         )
         panel.level = .floating
+        R3VTheme.configure(panel)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -71,9 +72,9 @@ final class RecordingIndicatorWindowController: NSWindowController {
     private func sizeForMode(_ mode: IndicatorMode) -> CGSize {
         switch mode {
         case .recording:
-            return CGSize(width: 160, height: 36)
-        case .pasteReady:
-            return CGSize(width: 180, height: 36)
+            return CGSize(width: 160, height: 44)
+        case .pasteReady, .transcribing:
+            return CGSize(width: 180, height: 44)
         }
     }
 }

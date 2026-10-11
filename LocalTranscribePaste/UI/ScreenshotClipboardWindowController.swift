@@ -17,6 +17,7 @@ final class ScreenshotClipboardWindowController: NSWindowController {
         let hosting = NSHostingController(rootView: view)
         let panel = NSPanel(contentViewController: hosting)
         panel.styleMask = [.nonactivatingPanel, .borderless]
+        R3VTheme.configure(panel)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -51,7 +52,8 @@ final class ScreenshotClipboardWindowController: NSWindowController {
         let ordered = items.sorted { $0.createdAt < $1.createdAt }
         let visibleCount = maxVisibleCount(for: screen)
         let visibleItems = Array(ordered.suffix(visibleCount))
-        if visibleItems.count > model.items.count {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if visibleItems.count > model.items.count && !reduceMotion {
             withAnimation(.spring(response: 0.45, dampingFraction: 0.72)) {
                 model.items = visibleItems
             }
@@ -66,7 +68,7 @@ final class ScreenshotClipboardWindowController: NSWindowController {
 
         let size = sizeForCount(visibleItems.count)
         let frame = frameForSize(size, in: screen)
-        window?.setFrame(frame, display: true, animate: true)
+        window?.setFrame(frame, display: true, animate: !reduceMotion)
         window?.orderFrontRegardless()
     }
 

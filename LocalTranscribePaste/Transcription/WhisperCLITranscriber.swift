@@ -37,6 +37,7 @@ final class WhisperCLITranscriber: TranscriptionEngine {
         let outputBase = fileSystem.temporaryDirectory
             .appendingPathComponent("ltp_out_\(uuidProvider.makeUUID().uuidString)")
         let outputTextURL = outputBase.appendingPathExtension("txt")
+        defer { try? fileSystem.removeItem(at: outputTextURL) }
 
         let arguments = ["-m", modelPath, "-f", audioURL.path, "-otxt", "-of", outputBase.path]
 

@@ -6,203 +6,115 @@ protocol AudioConverting {
 }
 
 final class AVAudioConverterService: AudioConverting {
+    // Memory use is independent of recording duration.
+    private static let bufferFrames: AVAudioFrameCount = 4096
     private let fileSystem: FileSystem
     private let uuidProvider: UUIDProviding
-    private let audioFileReader: AudioFileReading
     private let logger: TranscriptionLogging
 
     init(
         fileSystem: FileSystem = SystemFileSystem(),
         uuidProvider: UUIDProviding = SystemUUIDProvider(),
-        audioFileReader: AudioFileReading = SystemAudioFileReader(),
         logger: TranscriptionLogging = DefaultTranscriptionLogger()
     ) {
         self.fileSystem = fileSystem
         self.uuidProvider = uuidProvider
-        self.audioFileReader = audioFileReader
         self.logger = logger
     }
 
     func convertTo16kMonoPCM(inputURL: URL) throws -> URL {
-        let inputFile = try AVAudioFile(forReading: inputURL)
-        let inputFormat = inputFile.processingFormat
-        let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)
+        let input = try AVAudioFile(forReading: inputURL, commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard input.length > 0 else { throw TranscriptionError.emptyResult }
+        let inputFormat = input.processingFormat
+        guard let monoFormat = AVAudioFormat(standardFormatWithSampleRate: inputFormat.sampleRate, channels: 1),
+              let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: monoFormat, to: outputFormat),
+              let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: Self.bufferFrames),
+              let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: Self.bufferFrames),
+              let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: Self.bufferFrames) else {
+            throw TranscriptionError.conversionFailed
+        }
 
-        guard let format = outputFormat else { throw TranscriptionError.conversionFailed }
-        guard let converter = AVAudioConverter(from: inputFormat, to: format) else { throw TranscriptionError.conversionFailed }
-
+        let channel = try loudestChannel(in: input, buffer: inputBuffer)
+        input.framePosition = 0
+        logger.logInputAudio(sampleRate: inputFormat.sampleRate, channels: inputFormat.channelCount,
+                             frames: AVAudioFrameCount(clamping: input.length))
         let outputURL = fileSystem.temporaryDirectory
             .appendingPathComponent("ltp_resampled_\(uuidProvider.makeUUID().uuidString).wav")
-
-        let inputFrameCount = AVAudioFrameCount(inputFile.length)
-        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: inputFrameCount) else {
-            throw TranscriptionError.conversionFailed
+        var succeeded = false
+        defer {
+            if !succeeded { try? fileSystem.removeItem(at: outputURL) }
         }
-        try inputFile.read(into: inputBuffer)
-        logger.logInputAudio(sampleRate: inputFormat.sampleRate, channels: inputFormat.channelCount, frames: inputBuffer.frameLength)
-
-        let monoBuffer = try extractMonoBuffer(from: inputBuffer, format: inputFormat)
-
-        let outputFrameCapacity = AVAudioFrameCount(Double(monoBuffer.frameLength) * 16000.0 / inputFormat.sampleRate) + 1
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: outputFrameCapacity) else {
-            throw TranscriptionError.conversionFailed
-        }
-
-        var didProvideInput = false
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if didProvideInput {
-                outStatus.pointee = .endOfStream
+        let output = try AVAudioFile(forWriting: outputURL, settings: outputFormat.settings,
+                                     commonFormat: .pcmFormatInt16, interleaved: true)
+        var readError: Error?
+        var totalFrames: Int64 = 0
+        var peak: Float = 0
+        let provideInput: AVAudioConverterInputBlock = { requestedFrames, status in
+            do {
+                guard input.framePosition < input.length else {
+                    status.pointee = .endOfStream
+                    return nil
+                }
+                let remaining = AVAudioFrameCount(clamping: input.length - input.framePosition)
+                try input.read(into: inputBuffer, frameCount: min(requestedFrames, Self.bufferFrames, remaining))
+                guard inputBuffer.frameLength > 0 else {
+                    status.pointee = .endOfStream
+                    return nil
+                }
+                monoBuffer.frameLength = inputBuffer.frameLength
+                monoBuffer.floatChannelData![0].update(from: inputBuffer.floatChannelData![channel],
+                                                      count: Int(inputBuffer.frameLength))
+                status.pointee = .haveData
+                return monoBuffer
+            } catch {
+                readError = error
+                status.pointee = .endOfStream
                 return nil
             }
-            didProvideInput = true
-            outStatus.pointee = .haveData
-            return monoBuffer
         }
 
-        var error: NSError?
-        converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
-        if let error = error { throw error }
-        if outputBuffer.frameLength > 0 {
-            let peak = peakAmplitude(buffer: outputBuffer)
-            logger.logResampledAudio(frames: outputBuffer.frameLength, peak: peak)
-            try writeWav(url: outputURL, format: format, buffer: outputBuffer)
-        } else {
-            throw TranscriptionError.emptyResult
+        while true {
+            outputBuffer.frameLength = 0
+            var error: NSError?
+            let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: provideInput)
+            if let readError { throw readError }
+            if let error { throw error }
+            guard status != .error else { throw TranscriptionError.conversionFailed }
+            if outputBuffer.frameLength > 0 {
+                try output.write(from: outputBuffer)
+                totalFrames += Int64(outputBuffer.frameLength)
+                let samples = outputBuffer.int16ChannelData![0]
+                for index in 0..<Int(outputBuffer.frameLength) {
+                    peak = max(peak, abs(Float(samples[index])) / 32768)
+                }
+            }
+            if status == .endOfStream { break }
         }
-
+        guard totalFrames > 0 else { throw TranscriptionError.emptyResult }
+        logger.logResampledAudio(frames: AVAudioFrameCount(clamping: totalFrames), peak: peak)
+        succeeded = true
         return outputURL
     }
 
-    private func extractMonoBuffer(from inputBuffer: AVAudioPCMBuffer, format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let channelCount = Int(format.channelCount)
-        if channelCount <= 1 {
-            return inputBuffer
-        }
-
-        if let floatData = inputBuffer.floatChannelData {
-            let frameCount = Int(inputBuffer.frameLength)
-            if frameCount == 0 { throw TranscriptionError.emptyResult }
-            var peaks = [Float](repeating: 0, count: channelCount)
-            for ch in 0..<channelCount {
-                let samples = floatData[ch]
-                var peak: Float = 0
-                for i in 0..<frameCount {
-                    let value = abs(samples[i])
-                    if value > peak { peak = value }
+    private func loudestChannel(in file: AVAudioFile, buffer: AVAudioPCMBuffer) throws -> Int {
+        let channelCount = Int(file.processingFormat.channelCount)
+        guard channelCount > 1 else { return 0 }
+        // Preserve the existing loudest-channel behavior without keeping the recording in memory.
+        var peaks = [Float](repeating: 0, count: channelCount)
+        while file.framePosition < file.length {
+            try file.read(into: buffer, frameCount: Self.bufferFrames)
+            guard buffer.frameLength > 0 else { break }
+            for channel in 0..<channelCount {
+                let samples = buffer.floatChannelData![channel]
+                for frame in 0..<Int(buffer.frameLength) {
+                    peaks[channel] = max(peaks[channel], abs(samples[frame]))
                 }
-                peaks[ch] = peak
             }
-            let maxChannel = peaks.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
-            logger.logChannelPeaks(peaks: peaks, selectedChannel: maxChannel)
-
-            guard let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 1) else {
-                throw TranscriptionError.conversionFailed
-            }
-            guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: inputBuffer.frameCapacity) else {
-                throw TranscriptionError.conversionFailed
-            }
-            monoBuffer.frameLength = inputBuffer.frameLength
-            let dest = monoBuffer.floatChannelData![0]
-            let src = floatData[maxChannel]
-            dest.update(from: src, count: frameCount)
-            return monoBuffer
         }
-
-        if let int16Data = inputBuffer.int16ChannelData {
-            let frameCount = Int(inputBuffer.frameLength)
-            if frameCount == 0 { throw TranscriptionError.emptyResult }
-            var peaks = [Float](repeating: 0, count: channelCount)
-            for ch in 0..<channelCount {
-                let samples = int16Data[ch]
-                var peak: Int16 = 0
-                for i in 0..<frameCount {
-                    let value = samples[i]
-                    let absValue = value == Int16.min ? Int16.max : abs(value)
-                    if absValue > peak { peak = absValue }
-                }
-                peaks[ch] = Float(peak) / Float(Int16.max)
-            }
-            let maxChannel = peaks.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
-            logger.logChannelPeaks(peaks: peaks, selectedChannel: maxChannel)
-
-            guard let monoFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: format.sampleRate, channels: 1, interleaved: true) else {
-                throw TranscriptionError.conversionFailed
-            }
-            guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: inputBuffer.frameCapacity) else {
-                throw TranscriptionError.conversionFailed
-            }
-            monoBuffer.frameLength = inputBuffer.frameLength
-            let dest = monoBuffer.int16ChannelData![0]
-            let src = int16Data[maxChannel]
-            dest.update(from: src, count: frameCount)
-            return monoBuffer
-        }
-
-        throw TranscriptionError.conversionFailed
-    }
-
-    private func peakAmplitude(buffer: AVAudioPCMBuffer) -> Float {
-        if let int16Data = buffer.int16ChannelData {
-            let count = Int(buffer.frameLength)
-            if count == 0 { return 0 }
-            var peak: Int16 = 0
-            let samples = int16Data[0]
-            for i in 0..<count {
-                let value = samples[i]
-                let absValue = value == Int16.min ? Int16.max : abs(value)
-                if absValue > peak { peak = absValue }
-            }
-            return Float(peak) / Float(Int16.max)
-        }
-        if let floatData = buffer.floatChannelData {
-            let count = Int(buffer.frameLength)
-            if count == 0 { return 0 }
-            var peak: Float = 0
-            let samples = floatData[0]
-            for i in 0..<count {
-                let value = abs(samples[i])
-                if value > peak { peak = value }
-            }
-            return peak
-        }
-        return 0
-    }
-
-    private func writeWav(url: URL, format: AVAudioFormat, buffer: AVAudioPCMBuffer) throws {
-        let channels = Int(format.channelCount)
-        let sampleRate = Int(format.sampleRate)
-        let bitsPerSample = 16
-        let bytesPerSample = bitsPerSample / 8
-        let dataSize = Int(buffer.frameLength) * channels * bytesPerSample
-
-        var header = Data()
-        header.append(contentsOf: [0x52, 0x49, 0x46, 0x46]) // "RIFF"
-        header.append(UInt32(36 + dataSize).littleEndianData)
-        header.append(contentsOf: [0x57, 0x41, 0x56, 0x45]) // "WAVE"
-        header.append(contentsOf: [0x66, 0x6D, 0x74, 0x20]) // "fmt "
-        header.append(UInt32(16).littleEndianData) // PCM chunk size
-        header.append(UInt16(1).littleEndianData)  // PCM format
-        header.append(UInt16(channels).littleEndianData)
-        header.append(UInt32(sampleRate).littleEndianData)
-        header.append(UInt32(sampleRate * channels * bytesPerSample).littleEndianData)
-        header.append(UInt16(channels * bytesPerSample).littleEndianData)
-        header.append(UInt16(bitsPerSample).littleEndianData)
-        header.append(contentsOf: [0x64, 0x61, 0x74, 0x61]) // "data"
-        header.append(UInt32(dataSize).littleEndianData)
-
-        var data = Data()
-        data.append(header)
-
-        let audioBuffer = buffer.audioBufferList.pointee.mBuffers
-        if let mData = audioBuffer.mData {
-            data.append(Data(bytes: mData, count: dataSize))
-        } else if let int16Data = buffer.int16ChannelData {
-            data.append(Data(bytes: int16Data[0], count: dataSize))
-        } else {
-            throw TranscriptionError.conversionFailed
-        }
-
-        try data.write(to: url, options: .atomic)
+        let selected = peaks.indices.max(by: { peaks[$0] < peaks[$1] }) ?? 0
+        logger.logChannelPeaks(peaks: peaks, selectedChannel: selected)
+        return selected
     }
 }
 
@@ -223,12 +135,5 @@ struct DefaultTranscriptionLogger: TranscriptionLogging {
 
     func logResampledAudio(frames: AVAudioFrameCount, peak: Float) {
         Log.transcription.info("Resampled audio: frames=\(frames, privacy: .public) peak=\(peak, privacy: .public)")
-    }
-}
-
-private extension FixedWidthInteger {
-    var littleEndianData: Data {
-        var value = self.littleEndian
-        return Data(bytes: &value, count: MemoryLayout<Self>.size)
     }
 }

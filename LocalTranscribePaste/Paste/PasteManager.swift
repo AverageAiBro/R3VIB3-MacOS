@@ -8,6 +8,7 @@ final class PasteManager {
     private let sleeper: SleepProviding
     private let logger: PasteLogging
     private let mainThread: MainThreadRunning
+    private let typingQueue = DispatchQueue(label: "paste.typing", qos: .userInitiated)
 
     init(
         pasteboard: PasteboardWriting = SystemPasteboard(),
@@ -28,26 +29,23 @@ final class PasteManager {
     }
 
     func paste(text: String, mode: PasteMode) {
-        let snapshot = pasteboard.snapshot()
-        let preChangeCount = pasteboard.changeCount
-        copyToClipboard(text: text)
-        switch mode {
-        case .cmdV:
-            eventSender.sendPaste(modifier: .maskCommand)
-        case .ctrlV:
-            eventSender.sendPaste(modifier: .maskControl)
-        case .type:
-            typeString(text)
+        if mode == .type {
+            // Typing does not need the clipboard and must not block the UI for 20 ms per character.
+            typingQueue.async { [self] in
+                typeString(text)
+                logger.logPasteExecuted()
+            }
+            return
         }
-        restoreClipboardIfNeeded(snapshot: snapshot, preChangeCount: preChangeCount)
-        logger.logPasteExecuted()
-    }
-
-    private func restoreClipboardIfNeeded(snapshot: PasteboardSnapshot, preChangeCount: Int) {
-        mainThread.runAfter(seconds: 0.25) { [pasteboard, preChangeCount, snapshot] in
-            if pasteboard.changeCount != preChangeCount + 1 { return }
+        let snapshot = pasteboard.snapshot()
+        copyToClipboard(text: text)
+        let writtenChangeCount = pasteboard.changeCount
+        eventSender.sendPaste(modifier: mode == .cmdV ? .maskCommand : .maskControl)
+        mainThread.runAfter(seconds: 0.25) { [pasteboard, snapshot] in
+            guard pasteboard.changeCount == writtenChangeCount else { return }
             pasteboard.restore(snapshot)
         }
+        logger.logPasteExecuted()
     }
 
     private func typeString(_ text: String) {
@@ -60,7 +58,7 @@ final class PasteManager {
             if let mapping = keyCodeForCharacter(char) {
                 eventSender.sendKey(code: mapping.code, shift: mapping.shift)
             } else {
-                eventSender.sendKey(code: CGKeyCode(kVK_ANSI_Slash), shift: true)
+                eventSender.sendUnicodeText(String(char))
             }
             sleeper.sleep(microseconds: 20000)
         }
@@ -68,22 +66,29 @@ final class PasteManager {
 
     private func keyCodeForCharacter(_ char: Character) -> (code: CGKeyCode, shift: Bool)? {
         let lower = String(char).lowercased()
-        if lower.count != 1 { return nil }
-        let scalar = lower.unicodeScalars.first!.value
-
-        switch scalar {
-        case 97...122:
-            let code = CGKeyCode(kVK_ANSI_A + Int(scalar - 97))
-            let shift = String(char) != lower
-            return (code, shift)
-        case 48...57:
-            let code = CGKeyCode(kVK_ANSI_0 + Int(scalar - 48))
-            return (code, false)
-        default:
-            break
+        if let mapping = Self.characterMapping[char] { return mapping }
+        if lower.count == 1, let key = lower.first, let code = Self.letterCodes[key] {
+            return (CGKeyCode(code), String(char) != lower)
         }
+        return nil
+    }
 
-        let map: [Character: (CGKeyCode, Bool)] = [
+    private static let letterCodes: [Character: Int] = [
+            "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D,
+            "e": kVK_ANSI_E, "f": kVK_ANSI_F, "g": kVK_ANSI_G, "h": kVK_ANSI_H,
+            "i": kVK_ANSI_I, "j": kVK_ANSI_J, "k": kVK_ANSI_K, "l": kVK_ANSI_L,
+            "m": kVK_ANSI_M, "n": kVK_ANSI_N, "o": kVK_ANSI_O, "p": kVK_ANSI_P,
+            "q": kVK_ANSI_Q, "r": kVK_ANSI_R, "s": kVK_ANSI_S, "t": kVK_ANSI_T,
+            "u": kVK_ANSI_U, "v": kVK_ANSI_V, "w": kVK_ANSI_W, "x": kVK_ANSI_X,
+            "y": kVK_ANSI_Y, "z": kVK_ANSI_Z
+        ]
+    private static let characterMapping: [Character: (CGKeyCode, Bool)] = [
+            "0": (CGKeyCode(kVK_ANSI_0), false), "1": (CGKeyCode(kVK_ANSI_1), false),
+            "2": (CGKeyCode(kVK_ANSI_2), false), "3": (CGKeyCode(kVK_ANSI_3), false),
+            "4": (CGKeyCode(kVK_ANSI_4), false), "5": (CGKeyCode(kVK_ANSI_5), false),
+            "6": (CGKeyCode(kVK_ANSI_6), false), "7": (CGKeyCode(kVK_ANSI_7), false),
+            "8": (CGKeyCode(kVK_ANSI_8), false), "9": (CGKeyCode(kVK_ANSI_9), false),
+            "\t": (CGKeyCode(kVK_Tab), false),
             " ": (CGKeyCode(kVK_Space), false),
             ".": (CGKeyCode(kVK_ANSI_Period), false),
             ",": (CGKeyCode(kVK_ANSI_Comma), false),
@@ -116,6 +121,4 @@ final class PasteManager {
             "(": (CGKeyCode(kVK_ANSI_9), true),
             ")": (CGKeyCode(kVK_ANSI_0), true)
         ]
-        return map[char]
-    }
 }

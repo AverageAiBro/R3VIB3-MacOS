@@ -47,6 +47,7 @@
 		000000000000000000000142 /* ScreenshotClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000242 /* ScreenshotClipboardView.swift */; };
 		000000000000000000000143 /* ScreenshotClipboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000243 /* ScreenshotClipboardWindowController.swift */; };
 		000000000000000000000144 /* DragSourceOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000244 /* DragSourceOverlay.swift */; };
+		000000000000000000000145 /* R3VTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000245 /* R3VTheme.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -94,6 +95,7 @@
 		000000000000000000000243 /* ScreenshotClipboardWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotClipboardWindowController.swift; sourceTree = "<group>"; };
 		000000000000000000000244 /* DragSourceOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragSourceOverlay.swift; sourceTree = "<group>"; };
 		000000000000000000000600 /* R3VIB3.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = R3VIB3.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000245 /* R3VTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = R3VTheme.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -198,6 +200,7 @@
 				00000000000000000000000F /* TranscriptPopoverView.swift */,
 				000000000000000000000010 /* SettingsWindowController.swift */,
 				000000000000000000000011 /* SettingsView.swift */,
+				000000000000000000000245 /* R3VTheme.swift */,
 				000000000000000000000012 /* PermissionsView.swift */,
 				000000000000000000000013 /* HotkeyRecorderView.swift */,
 				000000000000000000000019 /* RecordingIndicatorView.swift */,
@@ -350,6 +353,7 @@
 				00000000000000000000010F /* TranscriptPopoverView.swift in Sources */,
 				000000000000000000000110 /* SettingsWindowController.swift in Sources */,
 				000000000000000000000111 /* SettingsView.swift in Sources */,
+				000000000000000000000145 /* R3VTheme.swift in Sources */,
 				000000000000000000000112 /* PermissionsView.swift in Sources */,
 				000000000000000000000113 /* HotkeyRecorderView.swift in Sources */,
 				000000000000000000000117 /* RecordingIndicatorView.swift in Sources */,
@@ -387,7 +391,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.localtranscribepaste.app;
 				PRODUCT_NAME = R3VIB3;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -424,7 +428,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.localtranscribepaste.app;
 				PRODUCT_NAME = R3VIB3;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
